@@ -173,4 +173,29 @@ public class ContentSettings
     /// </remarks>
     [DefaultValue(StaticEnableMediaRecycleBinProtection)]
     public bool EnableMediaRecycleBinProtection { get; set; } = StaticEnableMediaRecycleBinProtection;
+
+    /// <summary>
+    /// Gets or sets a value indicating whether to prompt for mandatory fields when uploading media.
+    /// </summary>
+    /// <remarks>
+    /// When set to true, users will be prompted with a modal to fill in any mandatory fields
+    /// (such as alt text) when uploading media items that have required properties.
+    /// </remarks>
+    [DefaultValue(false)]
+    public bool EnablePromptForMediaMandatoryFieldsOnUpload { get; set; } = false;
+
+    /// <summary>
+    /// Gets or sets the field aliases that should be validated when uploading media.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Specifies which property aliases should be validated during media upload, regardless of
+    /// whether they are marked as mandatory in the media type. This allows enforcing fields like
+    /// alt text without making them mandatory in Umbraco (which would prevent decorative images).
+    /// </para>
+    /// <para>
+    /// Common values include: "altText", "umbracoAltText", "imageAltText"
+    /// </para>
+    /// </remarks>
+    public string[] MediaUploadRequiredFields { get; set; } = Array.Empty<string>();
 }

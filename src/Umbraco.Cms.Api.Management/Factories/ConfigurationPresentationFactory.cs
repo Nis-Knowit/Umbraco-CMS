@@ -65,6 +65,8 @@ public class ConfigurationPresentationFactory : IConfigurationPresentationFactor
         {
             DisableDeleteWhenReferenced = _contentSettings.DisableDeleteWhenReferenced,
             DisableUnpublishWhenReferenced = _contentSettings.DisableUnpublishWhenReferenced,
+            EnablePromptForMediaMandatoryFieldsOnUpload = _contentSettings.EnablePromptForMediaMandatoryFieldsOnUpload,
+            MediaUploadRequiredFields = _contentSettings.MediaUploadRequiredFields,
         };
 
     public MediaTypeConfigurationResponseModel CreateMediaTypeConfigurationResponseModel() =>

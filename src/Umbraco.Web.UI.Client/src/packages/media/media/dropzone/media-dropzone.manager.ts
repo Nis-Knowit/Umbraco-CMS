@@ -2,6 +2,7 @@ import { UmbMediaDetailRepository } from '../repository/detail/index.js';
 import type { UmbMediaDetailModel, UmbMediaValueModel } from '../types.js';
 import { UMB_MEDIA_PROPERTY_VALUE_ENTITY_TYPE } from '../entity.js';
 import { UMB_DROPZONE_MEDIA_TYPE_PICKER_MODAL } from './modals/index.js';
+import { UMB_MEDIA_MANDATORY_FIELDS_MODAL } from '../modals/mandatory-fields/mandatory-fields-modal.token.js';
 import type { UmbControllerHost } from '@umbraco-cms/backoffice/controller-api';
 import {
 	UmbDropzoneManager,
@@ -13,6 +14,7 @@ import {
 } from '@umbraco-cms/backoffice/dropzone';
 import {
 	UmbMediaTypeStructureRepository,
+	UmbMediaTypeDetailRepository,
 	type UmbAllowedChildrenOfMediaType,
 	type UmbAllowedMediaTypeModel,
 	type UmbAllowedMediaTypesOfExtension,
@@ -22,6 +24,7 @@ import { TemporaryFileStatus } from '@umbraco-cms/backoffice/temporary-file';
 import { umbOpenModal } from '@umbraco-cms/backoffice/modal';
 import { UMB_NOTIFICATION_CONTEXT } from '@umbraco-cms/backoffice/notification';
 import { UmbLocalizationController } from '@umbraco-cms/backoffice/localization-api';
+import { MediaService } from '@umbraco-cms/backoffice/external/backend-api';
 
 export class UmbMediaDropzoneManager extends UmbDropzoneManager {
 	// The available media types for a file extension.
@@ -31,9 +34,12 @@ export class UmbMediaDropzoneManager extends UmbDropzoneManager {
 	readonly #allowedChildrenOf = new UmbArrayState<UmbAllowedChildrenOfMediaType>([], (x) => x.mediaTypeUnique);
 
 	#mediaTypeStructure = new UmbMediaTypeStructureRepository(this);
+	#mediaTypeDetailRepository = new UmbMediaTypeDetailRepository(this);
 	#mediaDetailRepository = new UmbMediaDetailRepository(this);
 	#notificationContext?: typeof UMB_NOTIFICATION_CONTEXT.TYPE;
 	#localization = new UmbLocalizationController(this);
+	#promptForMandatoryFields: boolean | null = null;
+	#configuredRequiredFields: string[] | null = null;
 
 	constructor(host: UmbControllerHost) {
 		super(host);
@@ -105,8 +111,28 @@ export class UmbMediaDropzoneManager extends UmbDropzoneManager {
 			return;
 		}
 
+		// Check configuration to see if we should prompt for mandatory fields
+		const shouldPrompt = await this.#shouldPromptForMandatoryFields();
+		console.log('Should prompt for mandatory fields:', shouldPrompt);
+		let additionalValues: Record<string, any> = {};
+
+		if (shouldPrompt) {
+			// Check for mandatory fields and show modal if needed
+			const mandatoryFields = await this.#getMandatoryFields(mediaTypeUnique);
+			console.log('Mandatory fields found:', mandatoryFields);
+
+			if (mandatoryFields.length > 0) {
+				const modalResult = await this.#showMandatoryFieldsModal(mediaTypeUnique, mandatoryFields);
+				if (!modalResult) {
+					this._updateStatus(item, UmbFileDropzoneItemStatus.CANCELLED);
+					return;
+				}
+				additionalValues = modalResult.values;
+			}
+		}
+
 		// Create the media item.
-		const scaffold = await this.#getItemScaffold(item, mediaTypeUnique);
+		const scaffold = await this.#getItemScaffold(item, mediaTypeUnique, additionalValues);
 		const { data } = await this.#mediaDetailRepository.create(scaffold, item.parentUnique);
 
 		if (data) {
@@ -117,7 +143,25 @@ export class UmbMediaDropzoneManager extends UmbDropzoneManager {
 	}
 
 	async #handleFolder(item: UmbUploadableFolder, mediaTypeUnique: string) {
-		const scaffold = await this.#getItemScaffold(item, mediaTypeUnique);
+		// Check configuration to see if we should prompt for mandatory fields
+		const shouldPrompt = await this.#shouldPromptForMandatoryFields();
+		let additionalValues: Record<string, any> = {};
+
+		if (shouldPrompt) {
+			// Check for mandatory fields and show modal if needed
+			const mandatoryFields = await this.#getMandatoryFields(mediaTypeUnique);
+
+			if (mandatoryFields.length > 0) {
+				const modalResult = await this.#showMandatoryFieldsModal(mediaTypeUnique, mandatoryFields);
+				if (!modalResult) {
+					this._updateStatus(item, UmbFileDropzoneItemStatus.CANCELLED);
+					return;
+				}
+				additionalValues = modalResult.values;
+			}
+		}
+
+		const scaffold = await this.#getItemScaffold(item, mediaTypeUnique, additionalValues);
 		const { data } = await this.#mediaDetailRepository.create(scaffold, item.parentUnique);
 		if (data) {
 			this._updateStatus(item, UmbFileDropzoneItemStatus.COMPLETE);
@@ -175,7 +219,11 @@ export class UmbMediaDropzoneManager extends UmbDropzoneManager {
 	}
 
 	// Scaffold
-	async #getItemScaffold(item: UmbUploadableItem, mediaTypeUnique: string): Promise<UmbMediaDetailModel> {
+	async #getItemScaffold(
+		item: UmbUploadableItem,
+		mediaTypeUnique: string,
+		additionalValues: Record<string, any> = {},
+	): Promise<UmbMediaDetailModel> {
 		// TODO: Use a scaffolding feature to ensure consistency. [NL]
 		const name = item.temporaryFile ? item.temporaryFile.file.name : (item.folder?.name ?? '');
 		const umbracoFile: UmbMediaValueModel = {
@@ -194,7 +242,29 @@ export class UmbMediaDropzoneManager extends UmbDropzoneManager {
 			values: item.temporaryFile ? [umbracoFile] : undefined,
 		};
 		const { data } = await this.#mediaDetailRepository.createScaffold(preset);
-		return data!;
+
+		if (!data) {
+			throw new Error('Failed to create scaffold');
+		}
+
+		// Add additional values from mandatory fields modal to the scaffold
+		if (Object.keys(additionalValues).length > 0) {
+			const additionalPropertyValues: Array<UmbMediaValueModel> = Object.entries(additionalValues).map(
+				([alias, value]) => ({
+					editorAlias: '',
+					alias,
+					value,
+					culture: null,
+					segment: null,
+					entityType: UMB_MEDIA_PROPERTY_VALUE_ENTITY_TYPE,
+				}),
+			);
+
+			// Merge additional values with existing values
+			data.values = [...(data.values || []), ...additionalPropertyValues];
+		}
+
+		return data;
 	}
 
 	async #showDialogMediaTypePicker(options: Array<UmbAllowedMediaTypeModel>) {
@@ -202,6 +272,62 @@ export class UmbMediaDropzoneManager extends UmbDropzoneManager {
 			() => undefined,
 		);
 		return value?.mediaTypeUnique;
+	}
+
+	async #getMandatoryFields(mediaTypeUnique: string) {
+		// Fetch media type details to check for mandatory fields
+		const { data: mediaType } = await this.#mediaTypeDetailRepository.requestByUnique(mediaTypeUnique);
+		if (!mediaType) return [];
+
+		// Get the configured required fields
+		const configuredFields = await this.#getConfiguredRequiredFields();
+		if (!configuredFields || configuredFields.length === 0) return [];
+
+		// Filter for properties that match the configured required fields
+		return mediaType.properties
+			.filter((p) => configuredFields.includes(p.alias) && p.alias !== 'umbracoFile')
+			.map((p) => ({
+				alias: p.alias,
+				name: p.name,
+				description: p.description ?? undefined,
+				editorAlias: p.dataType.unique,
+			}));
+	}
+
+	async #shouldPromptForMandatoryFields(): Promise<boolean> {
+		// Lazy load and cache the configuration setting
+		if (this.#promptForMandatoryFields === null) {
+			try {
+				const { data } = await MediaService.getMediaConfiguration();
+				console.log('Media configuration fetched:', data);
+				this.#promptForMandatoryFields = (data as any)?.enablePromptForMediaMandatoryFieldsOnUpload ?? false;
+				this.#configuredRequiredFields = (data as any)?.mediaUploadRequiredFields ?? [];
+				console.log('Configured required fields:', this.#configuredRequiredFields);
+			} catch (error) {
+				// Default to false if configuration cannot be fetched
+				console.error('Failed to fetch media configuration:', error);
+				this.#promptForMandatoryFields = false;
+				this.#configuredRequiredFields = [];
+			}
+		}
+		return this.#promptForMandatoryFields ?? false;
+	}
+
+	async #getConfiguredRequiredFields(): Promise<string[]> {
+		// Ensure configuration is loaded
+		await this.#shouldPromptForMandatoryFields();
+		return this.#configuredRequiredFields ?? [];
+	}
+
+	async #showMandatoryFieldsModal(mediaTypeUnique: string, fields: any[]) {
+		const { data: mediaType } = await this.#mediaTypeDetailRepository.requestByUnique(mediaTypeUnique);
+
+		return await umbOpenModal(this, UMB_MEDIA_MANDATORY_FIELDS_MODAL, {
+			data: {
+				mediaTypeName: mediaType?.name ?? 'Media',
+				fields,
+			},
+		}).catch(() => undefined);
 	}
 
 	async #createOneMediaItem(item: UmbUploadableItem) {
